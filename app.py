@@ -18,109 +18,37 @@ app.json.compact = False
 # --- Chrome Configuration ---
 def get_driver():
     options = Options()
-    options.add_argument("--headless")  # Run invisible
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
-    # On Render, chrome might be in a different path, this handles local dev
+    # Check for Chrome binary location (Render/Linux specific)
+    chrome_bin = os.environ.get("CHROME_BIN") or "/usr/bin/google-chrome" or "/usr/bin/google-chrome-stable"
+    if os.path.exists(chrome_bin):
+        options.binary_location = chrome_bin
+    
     try:
+        # Try installing/getting the driver
         service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-        return driver
+        return driver, None
     except Exception as e:
-        print(f"Error initializing Chrome Driver: {e}")
-        return None
-
-def extract_lat_long_from_url(url):
-    """
-    Extracts latitude and longitude from Google Maps URL.
-    Example URL: https://www.google.com/maps/place/...!3d23.7508671!4d90.3935266...
-    Or: https://www.google.com/maps/@23.7508671,90.3935266,15z...
-    """
-    # Pattern 1: @lat,lng
-    match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-    
-    # Pattern 2: !3dLat!4dLng (seen in /place/ URLs)
-    lat_match = re.search(r'!3d(-?\d+\.\d+)', url)
-    lng_match = re.search(r'!4d(-?\d+\.\d+)', url)
-    
-    if lat_match and lng_match:
-        return float(lat_match.group(1)), float(lng_match.group(1))
-        
-    return None, None
-
-def parse_address_string(full_address):
-    """
-    Attempts to extract Zip, Thana, District, State/Division from a standard Google Maps 
-    address string like: "House 32, Road 2, Dhanmondi, Dhaka 1209, Bangladesh"
-    """
-    details = {
-        "full_address": full_address,
-        "zip_code": None,
-        "thana": None,
-        "city": None,
-        "district": None,
-        "state_division": None,
-        "country": None
-    }
-    
-    # Simple regex for BD Zip Code (4 digits)
-    zip_match = re.search(r'\b\d{4}\b', full_address)
-    if zip_match:
-        details['zip_code'] = zip_match.group(0)
-
-    # Split by commas for rough parsing
-    parts = [p.strip() for p in full_address.split(',')]
-    
-    if parts:
-        details['country'] = parts[-1]  # Last part is usually country
-    
-    # Heuristic parsing for Bangladesh addresses
-    # Format usually: [Street], [Area/Thana], [City] [Zip], [Country]
-    if len(parts) >= 3:
-        # Check for City + Zip part (e.g., "Dhaka 1209")
-        city_zip_part = parts[-2]
-        if any(char.isdigit() for char in city_zip_part):
-            # Remove digits/zip to get City/Division name
-            # Often "Dhaka 1209" -> City: Dhaka
-            cleaned_part = re.sub(r'\d+', '', city_zip_part).strip()
-            details['city'] = cleaned_part
-            
-            # The part before City is often Thana/Area
-            details['thana'] = parts[-3]
-            
-            # If cleaned part looks like a major division, treat as State too
-            if "Dhaka" in cleaned_part or "Chittagong" in cleaned_part or "Sylhet" in cleaned_part:
-                details['state_division'] = cleaned_part + " Division"
-        else:
-            # Maybe just City/State
-            details['city'] = parts[-2]
-            details['thana'] = parts[-3]
-
-    # Try to set District same as City if not found (common in BD)
-    if not details['district'] and details['city']:
-        details['district'] = details['city'] + " District"
-
-    return details
-
-@app.route('/')
-def home():
-    return jsonify({
-        "message": "Google Maps Verification API (Scraper Edition) is running.",
-        "usage": "GET /search?address=... OR POST /enhance {'address': '...'}"
-    })
+        return None, str(e)
 
 def perform_search(address):
     if not address:
         return jsonify({"status": "error", "message": "Address is required"}), 400
 
-    driver = get_driver()
+    driver, error_msg = get_driver()
     if not driver:
-        return jsonify({"status": "error", "message": "Could not start browser backend."}), 500
+        return jsonify({
+            "status": "error", 
+            "message": "Could not start browser backend.", 
+            "details": error_msg
+        }), 500
 
     try:
         # Construct Google Maps Search URL
