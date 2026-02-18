@@ -19,8 +19,7 @@ This API uses **Selenium** to browse the real Google Maps website and search for
 
 ## Usage
 
-**Endpoint:** `POST /enhance`
-
+### 1. POST /enhance
 **Body:**
 ```json
 {
@@ -28,20 +27,31 @@ This API uses **Selenium** to browse the real Google Maps website and search for
 }
 ```
 
-**Response (Real Address):**
+### 2. GET /search (New)
+You can now search directly via URL:
+`GET /search?q=Dhanmondi 32`
+or
+`GET /search?address=Dhanmondi 32`
+
+
+### Response Example
 ```json
 {
-  "status": "success",
-  "verification": "real",
-  "data": {
-    "place_name": "Bangabandhu Memorial Museum",
-    "full_address": "Road No. 32, Dhaka 1205, Bangladesh",
-    "components": {
-      "city": "Dhaka",
-      "zip_code": "1205",
-      "country": "Bangladesh"
+    "status": "success",
+    "verification": "real",
+    "data": {
+        "place_name": "Bangabandhu Memorial Museum",
+        "full_address": "Road No. 32, Dhaka 1205, Bangladesh",
+        "google_map_url": "https://www.google.com/maps/place/Bangabandhu+Memorial+Museum/@23.75086,90.3755,17z/data=...",
+        "latitude": 23.75086,
+        "longitude": 90.3755,
+        "components": {
+            "city": "Dhaka",
+            "zip_code": "1205",
+            "state_division": "Dhaka Division",
+            "country": "Bangladesh"
+        }
     }
-  }
 }
 ```
 
