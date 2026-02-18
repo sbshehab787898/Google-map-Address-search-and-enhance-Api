@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import urllib.parse
 from flask import Flask, request, jsonify
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -13,7 +14,6 @@ from selenium.webdriver.support import expected_conditions as EC
 app = Flask(__name__)
 # Enable JSON Pretty Print
 app.json.compact = False
-
 
 # --- Chrome Configuration ---
 def get_driver():
@@ -33,9 +33,29 @@ def get_driver():
         print(f"Error initializing Chrome Driver: {e}")
         return None
 
+def extract_lat_long_from_url(url):
+    """
+    Extracts latitude and longitude from Google Maps URL.
+    Example URL: https://www.google.com/maps/place/...!3d23.7508671!4d90.3935266...
+    Or: https://www.google.com/maps/@23.7508671,90.3935266,15z...
+    """
+    # Pattern 1: @lat,lng
+    match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', url)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    
+    # Pattern 2: !3dLat!4dLng (seen in /place/ URLs)
+    lat_match = re.search(r'!3d(-?\d+\.\d+)', url)
+    lng_match = re.search(r'!4d(-?\d+\.\d+)', url)
+    
+    if lat_match and lng_match:
+        return float(lat_match.group(1)), float(lng_match.group(1))
+        
+    return None, None
+
 def parse_address_string(full_address):
     """
-    Attempts to extract Zip, Thana, District from a standard Google Maps 
+    Attempts to extract Zip, Thana, District, State/Division from a standard Google Maps 
     address string like: "House 32, Road 2, Dhanmondi, Dhaka 1209, Bangladesh"
     """
     details = {
@@ -44,6 +64,7 @@ def parse_address_string(full_address):
         "thana": None,
         "city": None,
         "district": None,
+        "state_division": None,
         "country": None
     }
     
@@ -64,16 +85,22 @@ def parse_address_string(full_address):
         # Check for City + Zip part (e.g., "Dhaka 1209")
         city_zip_part = parts[-2]
         if any(char.isdigit() for char in city_zip_part):
-            # Remove digits to get City name
-            city_name = re.sub(r'\d+', '', city_zip_part).strip()
-            details['city'] = city_name
+            # Remove digits/zip to get City/Division name
+            # Often "Dhaka 1209" -> City: Dhaka
+            cleaned_part = re.sub(r'\d+', '', city_zip_part).strip()
+            details['city'] = cleaned_part
+            
             # The part before City is often Thana/Area
             details['thana'] = parts[-3]
+            
+            # If cleaned part looks like a major division, treat as State too
+            if "Dhaka" in cleaned_part or "Chittagong" in cleaned_part or "Sylhet" in cleaned_part:
+                details['state_division'] = cleaned_part + " Division"
         else:
-            # Maybe just City
+            # Maybe just City/State
             details['city'] = parts[-2]
             details['thana'] = parts[-3]
-            
+
     # Try to set District same as City if not found (common in BD)
     if not details['district'] and details['city']:
         details['district'] = details['city'] + " District"
@@ -84,14 +111,10 @@ def parse_address_string(full_address):
 def home():
     return jsonify({
         "message": "Google Maps Verification API (Scraper Edition) is running.",
-        "usage": "Send POST to /enhance with {'address': '...'}. Warning: Slower than API."
+        "usage": "GET /search?address=... OR POST /enhance {'address': '...'}"
     })
 
-@app.route('/enhance', methods=['POST'])
-def enhance_address():
-    data = request.get_json(silent=True) or {}
-    address = data.get('address') or request.form.get('address')
-    
+def perform_search(address):
     if not address:
         return jsonify({"status": "error", "message": "Address is required"}), 400
 
@@ -101,21 +124,17 @@ def enhance_address():
 
     try:
         # Construct Google Maps Search URL
-        search_url = f"https://www.google.com/maps/search/{address}"
+        search_url = f"https://www.google.com/maps/search/{urllib.parse.quote(address)}"
         print(f"Searching: {search_url}")
         driver.get(search_url)
 
         # Wait for either result or "not found"
-        # We look for a class often associated with the main header or metadata
         try:
             # Wait up to 10 seconds for the H1 heading to appear (place name)
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.TAG_NAME, "h1"))
             )
         except:
-            # Timeout? Likely "Partial match" listing or Not Found
-            # Check if URL redirected to typical "search result list" or stayed put
-            # For this simple version, we assume timeout = uncertain/fake
             return jsonify({
                 "status": "fake_or_ambiguous",
                 "message": "Address not found or ambiguous on Google Maps.",
@@ -129,6 +148,9 @@ def enhance_address():
             # We found a specific location! Real!
             time.sleep(2) # Allow React to hydrate detailed fields
             
+            # Extract Lat/Long from URL
+            lat, lng = extract_lat_long_from_url(current_url)
+
             # Extract H1 (Place Name)
             try:
                 place_name = driver.find_element(By.TAG_NAME, "h1").text
@@ -136,8 +158,6 @@ def enhance_address():
                 place_name = address
             
             # Extract Address text 
-            # Google often puts the address in a button with data-item-id="address" 
-            # or aria-label containing "Address"
             full_address_text = ""
             try:
                 # Try finding element with aria-label="Address: [text]"
@@ -145,12 +165,8 @@ def enhance_address():
                 full_address_text = address_elem.get_attribute("aria-label").replace("Address: ", "")
             except:
                 # Fallback: grab meta tags? Or use page title?
-                # Page title format: "Place Name - Address - Google Maps"
                 page_title = driver.title
-                # Remove " - Google Maps"
-                clean_title = page_title.replace(" - Google Maps", "")
-                # Often simple logic suffices
-                full_address_text = clean_title
+                full_address_text = page_title.replace(" - Google Maps", "")
 
             # Parse details from the string
             parsed = parse_address_string(full_address_text)
@@ -161,13 +177,14 @@ def enhance_address():
                 "data": {
                     "place_name": place_name,
                     "full_address": full_address_text,
-                    "url": current_url,
+                    "google_map_url": current_url,
+                    "latitude": lat,
+                    "longitude": lng,
                     "components": parsed
                 }
             })
             
         elif "/search/" in current_url:
-             # It stayed on search page.
              # Check for "Google Maps can't find" text
             page_src = driver.page_source
             if "can't find" in page_src or "Make sure your search is spelled correctly" in page_src:
@@ -177,7 +194,6 @@ def enhance_address():
                     "message": "Google Maps explicitly returned no results."
                 }), 404
             else:
-                # List of results
                 return jsonify({
                     "status": "ambiguous",
                     "verification": "uncertain",
@@ -190,6 +206,18 @@ def enhance_address():
         return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         driver.quit()
+
+@app.route('/enhance', methods=['POST'])
+def enhance_address_post():
+    data = request.get_json(silent=True) or {}
+    address = data.get('address') or request.form.get('address')
+    return perform_search(address)
+
+@app.route('/search', methods=['GET'])
+def search_address_get():
+    # Support /search?address=... and /search?q=... and even /search?text=...
+    address = request.args.get('address') or request.args.get('q') or request.args.get('text')
+    return perform_search(address)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
