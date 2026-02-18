@@ -160,11 +160,11 @@ def perform_search(address):
             # Extract Address text 
             full_address_text = ""
             try:
-                # Try finding element with aria-label="Address: [text]"
+                # Try finding element with data-item-id="address"
                 address_elem = driver.find_element(By.CSS_SELECTOR, "[data-item-id='address']")
                 full_address_text = address_elem.get_attribute("aria-label").replace("Address: ", "")
             except:
-                # Fallback: grab meta tags? Or use page title?
+                # Fallback
                 page_title = driver.title
                 full_address_text = page_title.replace(" - Google Maps", "")
 
@@ -174,6 +174,7 @@ def perform_search(address):
             return jsonify({
                 "status": "success",
                 "verification": "real",
+                "type": "single_result",
                 "data": {
                     "place_name": place_name,
                     "full_address": full_address_text,
@@ -185,7 +186,7 @@ def perform_search(address):
             })
             
         elif "/search/" in current_url:
-             # Check for "Google Maps can't find" text
+             # Check for "Google Maps can't find" text first
             page_src = driver.page_source
             if "can't find" in page_src or "Make sure your search is spelled correctly" in page_src:
                  return jsonify({
@@ -193,11 +194,56 @@ def perform_search(address):
                     "verification": "fake",
                     "message": "Google Maps explicitly returned no results."
                 }), 404
+            
+            # If we are here, it's likely a LIST of results
+            # Scrape the list items
+            results = []
+            try:
+                # Find all anchor tags that link to a specific place
+                # These usually have an href containing '/maps/place/' and an aria-label (the name)
+                # We wait a moment for the list to load
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/maps/place/']"))
+                )
+                
+                links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/maps/place/']")
+                
+                for link in links:
+                    url = link.get_attribute("href")
+                    name = link.get_attribute("aria-label")
+                    
+                    # Avoid duplicates or empty ones
+                    if url and name and "/maps/place/" in url:
+                        # Extract lat/long from this URL if possible
+                        lat, lng = extract_lat_long_from_url(url)
+                        
+                        results.append({
+                            "place_name": name,
+                            "google_map_url": url,
+                            "latitude": lat,
+                            "longitude": lng
+                        })
+                        
+                # Limit to top 10 results to keep response clean
+                results = results[:10]
+
+            except Exception as e:
+                print(f"Error scraping list: {e}")
+                # If scraping context fails but we are on search page, distinct from "not found"
+            
+            if results:
+                return jsonify({
+                    "status": "success",
+                    "verification": "ambiguous",
+                    "type": "multiple_results",
+                    "message": f"Found {len(results)} possible locations.",
+                    "data": results
+                })
             else:
                 return jsonify({
                     "status": "ambiguous",
                     "verification": "uncertain",
-                    "message": "Multiple locations found. Please be more specific."
+                    "message": "Multiple locations found, but could not extract details. Please be more specific."
                 })
 
         return jsonify({"status": "error", "message": "Unknown state"}), 500
