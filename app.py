@@ -11,6 +11,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 app = Flask(__name__)
+# Enable JSON Pretty Print
+app.json.compact = False
+
 
 # --- Chrome Configuration ---
 def get_driver():
